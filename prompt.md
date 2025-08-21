@@ -1,47 +1,37 @@
-🛠️ Cơ chế mô phỏng
+Tạo một mô phỏng trực quan bằng HTML + JS (canvas) về truck platooning với các yêu cầu sau:
 
-Đoàn xe (4–6 xe)
+1. Platoon xe tải:
+   - Số lượng xe ngẫu nhiên 4–6 xe.
+   - Leader luôn ở đầu (bên phải nhất), chạy hướng trái → phải trên làn ngoài cùng.
+   - Xe rời đoàn: chuyển làn, tăng tốc vượt leader, biến mất khỏi mô phỏng.
+   - Xe nhập đoàn: di chuyển từ từ vào platoon, chuyển kết nối V2I → V2V.
+   - Xe có hình dạng khác nhau: xe tải dài đỏ, xe con ngắn xanh, xe bus dài xanh lá.
 
-Luôn duy trì số xe trong khoảng 4–6.
+2. Xe ngoài platoon:
+   - Chạy các làn khác, luôn kết nối với trạm gNodeB (V2I).
+   - Số lượng xe tùy địa hình: City 7–10 xe, Highway/Tunnel 4–5 xe.
 
-Nếu < 4 → spawn xe mới từ phía sau.
+3. Địa hình & trạm gNodeB:
+   - City: trạm cách nhau 100m, nhiều xe ngoài platoon.
+   - Tunnel: không có trạm, ít xe ngoài platoon.
+   - Highway: ít trạm, 4–5 xe ngoài platoon.
+   - Cảnh vật và trạm thay đổi liên tục khi xe chạy qua.
+   - Nền canvas thay đổi theo địa hình (city, highway, tunnel).
 
-Nếu > 6 → không thêm xe.
+4. Hiển thị trạng thái & kết nối:
+   - Vẽ dây kết nối từ xe platoon đến leader (V2V) hoặc đến gNodeB (V2I), V2V màu cam, V2I màu vàng.
+   - Hiển thị bảng theo dõi tất cả xe: ID, loại xe, kết nối, tốc độ, độ trễ.
+   - Leader luôn ở đầu, hướng trái → phải.
 
-Platooning
+5. Animation mượt & liên tục:
+   - Xe chạy vòng lặp, cảnh vật thay đổi liên tục.
+   - Xe tách đoàn, nhập đoàn mượt mà.
+   - Các xe ngoài platoon chạy bình thường.
 
-Xe leader đi đầu, tốc độ cố định (vd 2 px/frame).
+6. Controls:
+   - Nút bấm kích hoạt xe rời/nhập đoàn (1–2 xe ngẫu nhiên).
+   - Bảng trạng thái cập nhật tự động.
 
-Xe phía sau nối đuôi, giữ khoảng cách 70 px.
-
-Xe rời đoàn
-
-Ngẫu nhiên mỗi 8–12 giây, chọn 1 xe (không phải leader) → tăng tốc, chạy thẳng và biến mất khỏi canvas.
-
-Nếu leader rời → xe kế tiếp thành leader mới.
-
-Địa hình (ngẫu nhiên)
-
-Màn hình chia thành “khu vực địa hình” dài vài trăm pixel:
-
-Cao tốc: mạng tốt, xe chạy mượt.
-
-Đô thị: nhiều nhiễu, jitter tăng.
-
-Hầm: mất sóng gNB, xe chỉ còn V2V.
-
-Sau mỗi đoạn (vd 600–1000px), chọn random 1 địa hình mới → hiển thị bằng màu nền hoặc dải màu trên canvas.
-
-Kết nối mạng
-
-Nếu cao tốc/đô thị → leader kết nối gNB, xe sau nối hop-by-hop.
-
-Nếu hầm → chỉ còn V2V, log hiển thị cảnh báo “🚨 Mất kết nối gNB, fallback V2V”.
-
-Hiển thị trực quan
-
-Canvas: xe tải nối đuôi nhau.
-
-Dải nền chạy ngang tượng trưng cho địa hình.
-
-Log: sự kiện spawn, rời đoàn, đổi địa hình, kết nối mạng.
+7. Yêu cầu:
+   - File HTML + JS hoàn chỉnh, chạy trực tiếp trên trình duyệt.
+   - Mô phỏng đầy đủ animation, cảnh vật, xe platoon, xe ngoài platoon, kết nối và bảng theo dõi.
