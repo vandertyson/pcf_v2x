@@ -1,0 +1,646 @@
+<!doctype html>
+<html lang="vi">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Truck Platooning — Multi-lane + Traffic</title>
+    <style>
+        :root {
+            --bg: #f4f7fb;
+            --card: #fff;
+            --muted: #6b7280;
+        }
+
+        body {
+            margin: 0;
+            font-family: Inter, system-ui, Arial;
+            background: var(--bg);
+            color: #0b1220;
+        }
+
+        .wrap {
+            max-width: 1200px;
+            margin: 18px auto;
+            padding: 12px;
+        }
+
+        h1 {
+            margin: 0 0 8px;
+            font-size: 18px;
+        }
+
+        #canvasWrap {
+            background: #eaf2ff;
+            border-radius: 12px;
+            padding: 8px;
+            border: 1px solid #d6dce8;
+        }
+
+        canvas {
+            width: 100%;
+            height: 480px;
+            display: block;
+            border-radius: 8px;
+            background: linear-gradient(#eaf2ff, #e6eefb);
+        }
+
+        .controls {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin: 10px 0;
+        }
+
+        button {
+            padding: 8px 12px;
+            border-radius: 8px;
+            border: 1px solid #cbd5e1;
+            background: #fff;
+            cursor: pointer;
+        }
+
+        button.primary {
+            background: #2563eb;
+            color: white;
+            border-color: transparent;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 12px;
+            background: var(--card);
+        }
+
+        th,
+        td {
+            border: 1px solid #e6eef8;
+            padding: 8px;
+            text-align: center;
+            font-size: 13px;
+        }
+
+        th {
+            background: #f3f6ff;
+        }
+
+        .log {
+            background: #071024;
+            color: #dbeafe;
+            padding: 8px;
+            height: 140px;
+            overflow: auto;
+            font-family: monospace;
+            border-radius: 8px;
+            margin-top: 10px;
+        }
+
+        .row {
+            display: flex;
+            gap: 12px;
+        }
+
+        .col {
+            flex: 1;
+        }
+
+        .small {
+            font-size: 13px;
+            color: var(--muted);
+        }
+    </style>
+</head>
+
+<body>
+    <div class="wrap">
+        <h1>Truck Platooning — Multi-lane traffic & 5G</h1>
+        <div class="small">Platoon chạy làn ngoài cùng; các phương tiện khác chạy ở các làn trên. GNB xuất hiện theo địa
+            hình. Tunnel: không gNB.</div>
+
+        <div id="canvasWrap">
+            <canvas id="canvas"></canvas>
+        </div>
+
+        <div class="controls">
+            <button id="btnLeave" class="primary">🚗 Xe rời đoàn (1–2)</button>
+            <button id="btnJoin">➕ Xe nhập đoàn (1–2)</button>
+            <div style="flex:1"></div>
+            <div class="small">Địa hình: <strong id="terrainLabel">city</strong></div>
+        </div>
+
+        <div class="row">
+            <div class="col">
+                <h3>Bảng trạng thái Platoon</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Xe</th>
+                            <th>Vai trò</th>
+                            <th>Kết nối</th>
+                            <th>Trạng thái</th>
+                        </tr>
+                    </thead>
+                    <tbody id="platoonTable"></tbody>
+                </table>
+            </div>
+
+            <div class="col">
+                <h3>Traffic (hiện có)</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Loại</th>
+                            <th>Số lượng</th>
+                            <th>Ghi chú</th>
+                        </tr>
+                    </thead>
+                    <tbody id="trafficTable"></tbody>
+                </table>
+
+                <h3>Nhật ký</h3>
+                <div id="log" class="log">(trống)</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // -------------------- Setup & util --------------------
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const terrainLabel = document.getElementById('terrainLabel');
+        const platoonTable = document.getElementById('platoonTable');
+        const trafficTable = document.getElementById('trafficTable');
+        const logDiv = document.getElementById('log');
+        function uiLog(msg) { const t = new Date().toLocaleTimeString(); logDiv.innerHTML = `[${t}] ${msg}<br>` + logDiv.innerHTML; }
+        function rand(a, b) { return Math.random() * (b - a) + a; }
+        function randInt(a, b) { return Math.floor(rand(a, b + 1)); }
+        function lerp(a, b, t) { return a + (b - a) * t; }
+        function resizeCanvas() { const rect = canvas.getBoundingClientRect(); const dpr = window.devicePixelRatio || 1; canvas.width = Math.round(rect.width * dpr); canvas.height = Math.round(rect.height * dpr); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // -------------------- Config --------------------
+        const LANES = [140, 190, 260]; // lane y positions top -> bottom: lane 0,1,2 (platoon at bottom index 2)
+        const PLATOON_LANE_INDEX = 2;
+        const PLATOON_MIN = 4, PLATOON_MAX = 6;
+        const SPACING = 78; // px between trucks in platoon
+        const SCROLL_SPEED = 2.6;
+        const TERRAIN_TYPES = ['city', 'highway', 'tunnel'];
+
+        // traffic densities per terrain
+        const TRAFFIC_CONFIG = {
+            city: { min: 7, max: 10 },
+            highway: { min: 4, max: 5 },
+            tunnel: { min: 4, max: 4 }
+        };
+
+        // -------------------- State --------------------
+        let offset = 0;
+        let terrain = 'city';
+        let terrainProgress = 0;
+        let terrainLength = 900 + rand(0, 800);
+
+        let trucks = []; // platoon trucks (and joining ones that are spawned into array)
+        let otherVehicles = []; // cars & buses on lanes 0..1
+        let nextTruckId = 1;
+
+        // -------------------- Helpers --------------------
+        function createPlatoonTruck(opts) {
+            return {
+                id: opts.id || ('T' + (nextTruckId++)),
+                x: opts.x ?? 300,
+                y: opts.y ?? LANES[PLATOON_LANE_INDEX],
+                role: opts.role ?? 'Follower', // Leader or Follower
+                conn: opts.conn ?? 'V2V',
+                status: opts.status ?? 'normal', // normal | shifting | overtaking | joining
+                vx: opts.vx ?? 0,
+                color: opts.color ?? (opts.role === 'Leader' ? '#ef4444' : '#1f6feb')
+            };
+        }
+        function createOtherVehicle(type, laneIndex, xStart) {
+            return {
+                id: (type === 'car' ? 'C' : 'B') + randInt(1000, 9999),
+                type,
+                lane: laneIndex,
+                x: xStart,
+                y: LANES[laneIndex],
+                vx: (type === 'bus' ? rand(1.6, 2.2) : rand(2.0, 3.4)), // cars faster on average
+                color: type === 'bus' ? '#b45309' : '#0ea5a4'
+            };
+        }
+
+        // -------------------- Initialize platoon --------------------
+        function initPlatoon() {
+            trucks = [];
+            const n = randInt(PLATOON_MIN, PLATOON_MAX);
+            for (let i = 0; i < n; i++) {
+                const isLeader = (i === n - 1);
+                const t = createPlatoonTruck({
+                    id: 'T' + (i + 1),
+                    x: 300 + i * SPACING,
+                    y: LANES[PLATOON_LANE_INDEX],
+                    role: isLeader ? 'Leader' : 'Follower',
+                    status: 'normal',
+                    conn: isLeader ? (terrain !== 'tunnel' ? 'V2I' : 'NONE') : 'V2V',
+                    color: isLeader ? '#ef4444' : '#1f6feb'
+                });
+                trucks.push(t);
+            }
+            uiLog(`Khởi tạo platoon ${trucks.length} xe`);
+        }
+        initPlatoon();
+
+        // -------------------- Environment & GNB --------------------
+        function switchTerrainRandom() {
+            const choices = TERRAIN_TYPES.filter(t => t !== terrain);
+            terrain = choices[Math.floor(Math.random() * choices.length)];
+            terrainLabel.textContent = terrain;
+            terrainProgress = 0;
+            terrainLength = 700 + rand(200, 1000);
+            uiLog(`🌍 Chuyển địa hình → ${terrain}`);
+            // adjust other vehicle counts
+            adjustOtherTraffic();
+        }
+        function getGNBPositions() {
+            if (terrain === 'tunnel') return [];
+            const spacing = terrain === 'city' ? 120 : 380;
+            const positions = [];
+            // generate several across wide world relative to offset
+            for (let worldX = -1000; worldX < 2000; worldX += spacing) {
+                const screenX = worldX - (offset % spacing) + 200;
+                positions.push({ x: screenX, y: LANES[1] - 80 });
+            }
+            return positions.filter(p => p.x > -80 && p.x < canvas.width + 80);
+        }
+
+        // -------------------- Other traffic management --------------------
+        function adjustOtherTraffic() {
+            // target count based on terrain
+            const cfg = TRAFFIC_CONFIG[terrain];
+            const target = randInt(cfg.min, cfg.max);
+            const current = otherVehicles.length;
+            if (current < target) {
+                // spawn to reach target (stagger)
+                for (let i = 0; i < target - current; i++) {
+                    setTimeout(() => spawnOtherVehicle(), i * 300);
+                }
+            } else if (current > target) {
+                // let extras run off naturally (do nothing)
+            }
+        }
+        function spawnOtherVehicle() {
+            // choose lane among lanes except platoon lane
+            const lanesAvailable = [0, 1];
+            const lane = lanesAvailable[Math.floor(Math.random() * lanesAvailable.length)];
+            const type = Math.random() < 0.15 ? 'bus' : 'car';
+            const xStart = -60 - Math.random() * 200;
+            const v = createOtherVehicle(type, lane, xStart);
+            otherVehicles.push(v);
+        }
+
+        // periodically ensure traffic density
+        setInterval(() => {
+            adjustOtherTraffic();
+        }, 3500);
+
+        // spawn some initial other vehicles
+        for (let i = 0; i < 6; i++) spawnOtherVehicle();
+
+        // -------------------- Platoon behaviors: leaving/joining --------------------
+        function startLeaveTruck(truck) {
+            if (!truck || truck.status !== 'normal' || truck.role === 'Leader') return;
+            truck.status = 'shifting';
+            truck.prevConn = truck.conn;
+            uiLog(`${truck.id} bắt đầu tách đoàn (chuẩn bị chuyển làn)`);
+        }
+        function startJoinCount(count = 1) {
+            for (let k = 0; k < count; k++) {
+                const newId = 'N' + randInt(200, 999);
+                const t = createPlatoonTruck({
+                    id: newId,
+                    x: -80 - k * 40,
+                    y: LANES[0], // spawn in upper lane visually
+                    vx: 0,
+                    role: 'Follower',
+                    conn: 'V2I',
+                    status: 'joining',
+                    color: '#60a5fa'
+                });
+                trucks.unshift(t);
+                uiLog(`${t.id} spawn (V2I) và đang nhập đoàn`);
+            }
+        }
+
+        // automated frequent leaving to keep dynamic (but user can trigger manually)
+        setInterval(() => {
+            // modest probability to auto leave
+            const candidates = trucks.filter(t => t.status === 'normal' && t.role !== 'Leader');
+            if (candidates.length > 0 && Math.random() < 0.45) {
+                const pick = candidates[Math.floor(Math.random() * candidates.length)];
+                startLeaveTruck(pick);
+            }
+            // ensure platoon count within [MIN,MAX]
+            if (trucks.length < PLATOON_MIN) {
+                startJoinCount(1);
+            }
+        }, 4200);
+
+        // -------------------- Buttons --------------------
+        document.getElementById('btnLeave').addEventListener('click', () => {
+            const candidates = trucks.filter(t => t.status === 'normal' && t.role !== 'Leader');
+            if (candidates.length === 0) return;
+            let n = randInt(1, 2);
+            n = Math.min(n, candidates.length);
+            for (let i = 0; i < n; i++) {
+                const idx = Math.floor(Math.random() * candidates.length);
+                const t = candidates.splice(idx, 1)[0];
+                startLeaveTruck(t);
+            }
+        });
+        document.getElementById('btnJoin').addEventListener('click', () => {
+            const n = randInt(1, 2);
+            startJoinCount(n);
+        });
+
+        // -------------------- Update loop --------------------
+        function update(dt) {
+            offset += SCROLL_SPEED;
+            terrainProgress += SCROLL_SPEED;
+            if (terrainProgress > terrainLength) {
+                switchTerrainRandom();
+            }
+
+            // update other vehicles positions: they actually move relative to scroll (we'll move them right)
+            for (let i = otherVehicles.length - 1; i >= 0; i--) {
+                const v = otherVehicles[i];
+                // cars/buses move rightwards; lane-based slight vertical jitter
+                v.x += v.vx;
+                // if off screen to the right, remove
+                if (v.x > canvas.width + 80) {
+                    otherVehicles.splice(i, 1);
+                }
+            }
+
+            // maintain target traffic counts per terrain
+            const cfg = TRAFFIC_CONFIG[terrain];
+            const targetOther = randInt(cfg.min, cfg.max);
+            if (otherVehicles.length < targetOther) {
+                // spawn a few gradually
+                if (Math.random() < 0.6) spawnOtherVehicle();
+            }
+
+            // Platoon trucks update
+            // ensure trucks sorted left->right by x for ordering
+            trucks.sort((a, b) => a.x - b.x);
+
+            // rightmost is leader
+            if (trucks.length > 0) {
+                const rightmost = trucks.reduce((a, b) => a.x > b.x ? a : b, trucks[0]);
+                trucks.forEach(t => t.role = (t === rightmost) ? 'Leader' : 'Follower');
+            }
+
+            const gnbPositions = getGNBPositions();
+
+            // update each platoon truck's behavior
+            for (let i = trucks.length - 1; i >= 0; i--) {
+                const t = trucks[i];
+                if (t.status === 'shifting') {
+                    // move toward upper lane (LANE_UP = LANES[1], we'll use index 1 for passing)
+                    t.y = lerp(t.y, LANES[1], 0.16);
+                    t.x += 1.0 + 0.4 * Math.random();
+                    // once near upper lane, switch to overtaking
+                    if (Math.abs(t.y - LANES[1]) < 1.4) {
+                        t.status = 'overtaking';
+                        t.vx = 3.6 + Math.random() * 1.4;
+                        // when overtaking, set V2I if gNB exist
+                        t.conn = (gnbPositions.length > 0) ? 'V2I' : 'NONE';
+                        uiLog(`${t.id} đã chuyển làn, bắt đầu vượt (V2V → ${t.conn})`);
+                    }
+                } else if (t.status === 'overtaking') {
+                    // accelerate and move to right
+                    t.vx = lerp(t.vx, 6.2, 0.03);
+                    t.x += t.vx;
+                    // if off-screen remove
+                    if (t.x > canvas.width + 140) {
+                        uiLog(`${t.id} đã vượt ra khỏi mô phỏng`);
+                        trucks.splice(i, 1);
+                    }
+                } else if (t.status === 'joining') {
+                    // joiner moves to target index (its index in trucks array after unshift)
+                    const idx = trucks.indexOf(t);
+                    const targetX = 300 + idx * SPACING;
+                    t.x = lerp(t.x, targetX, 0.06);
+                    t.y = lerp(t.y, LANES[PLATOON_LANE_INDEX], 0.06);
+                    // initially conn V2I -> when fully inside, flip to V2V
+                    if (Math.abs(t.x - targetX) < 1.2 && Math.abs(t.y - LANES[PLATOON_LANE_INDEX]) < 1.2) {
+                        t.status = 'normal';
+                        t.conn = 'V2V';
+                        uiLog(`${t.id} đã nhập đoàn (V2I → V2V)`);
+                    }
+                } else { // normal
+                    // maintain formation positions
+                    const idx = trucks.indexOf(t);
+                    const desiredX = 300 + idx * SPACING;
+                    t.x = lerp(t.x, desiredX, 0.18);
+                    t.y = lerp(t.y, LANES[PLATOON_LANE_INDEX], 0.18);
+                    // connection: leader tries V2I if gNB present & not in tunnel
+                    if (t.role === 'Leader') {
+                        t.conn = (terrain !== 'tunnel' && gnbPositions.length > 0) ? 'V2I' : 'NONE';
+                    } else {
+                        t.conn = 'V2V';
+                    }
+                }
+            }
+
+            // ensure platoon size within bounds by auto-joining if too few
+            if (trucks.length < PLATOON_MIN) {
+                startJoinCount(1);
+            }
+            // do not forcibly remove if too many; user button controls leave
+        }
+
+        // -------------------- Drawing --------------------
+        function draw() {
+            // clear
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // background color per terrain
+            if (terrain === 'city') ctx.fillStyle = '#e6f8ff';
+            else if (terrain === 'tunnel') ctx.fillStyle = '#33393f';
+            else ctx.fillStyle = '#fff8e6';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // lanes drawing (top to bottom)
+            ctx.save();
+            // draw lanes visually
+            for (let li = 0; li < LANES.length; li++) {
+                const y = LANES[li];
+                // road band
+                ctx.fillStyle = '#2d3748';
+                ctx.fillRect(0, y - 28, canvas.width, 56);
+                // dashed center of lane
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 2;
+                ctx.setLineDash([26, 20]);
+                ctx.beginPath();
+                for (let x = - (offset % 56); x < canvas.width + 80; x += 56) {
+                    ctx.moveTo(x, y);
+                    ctx.lineTo(x + 24, y);
+                }
+                ctx.stroke();
+                ctx.setLineDash([]);
+            }
+
+            // draw environment (buildings / trees / tunnel lights / poles)
+            const baseSpacing = 220;
+            for (let i = -6; i < 24; i++) {
+                const sx = i * baseSpacing - (offset % baseSpacing) + 60;
+                if (terrain === 'city') {
+                    // building
+                    ctx.fillStyle = '#98a0ad';
+                    ctx.fillRect(sx, LANES[0] - 120, 48, 110);
+                    // small tree
+                    ctx.fillStyle = '#16a34a';
+                    ctx.fillRect(sx + 62, LANES[0] - 60, 10, 36);
+                } else if (terrain === 'tunnel') {
+                    ctx.fillStyle = '#444';
+                    ctx.fillRect(sx, LANES[0] - 160, 140, 20); // lights
+                    ctx.fillStyle = '#ffd';
+                    ctx.fillRect(sx + 36, LANES[0] - 160, 6, 20);
+                    ctx.fillRect(sx + 80, LANES[0] - 160, 6, 20);
+                } else {
+                    // highway: trees + poles
+                    ctx.fillStyle = '#16a34a';
+                    ctx.fillRect(sx, LANES[0] - 80, 12, 48);
+                    ctx.fillStyle = '#8b8f96';
+                    ctx.fillRect(sx + 80, LANES[0] - 100, 6, 80);
+                }
+            }
+
+            // draw gNBs
+            const gpos = getGNBPositions();
+            gpos.forEach(g => {
+                ctx.fillStyle = '#071827';
+                ctx.beginPath(); ctx.arc(g.x, g.y, 8, 0, Math.PI * 2); ctx.fill();
+                ctx.fillStyle = '#fff'; ctx.font = '10px sans-serif'; ctx.fillText('gNB', g.x - 14, g.y - 12);
+            });
+
+            // draw other vehicles (cars & buses) — they move relative to scroll
+            otherVehicles.forEach(v => {
+                // draw shape depending on type
+                if (v.type === 'car') {
+                    ctx.fillStyle = v.color;
+                    ctx.fillRect(v.x - 12, v.y - 8, 24, 16);
+                    ctx.fillStyle = '#fff'; ctx.font = '10px sans-serif'; ctx.fillText(v.id, v.x - 10, v.y - 12);
+                } else { // bus
+                    ctx.fillStyle = v.color;
+                    ctx.fillRect(v.x - 24, v.y - 10, 48, 20);
+                    ctx.fillStyle = '#fff'; ctx.font = '10px sans-serif'; ctx.fillText(v.id, v.x - 10, v.y - 14);
+                }
+                // draw V2I link (if gNB exists & not tunnel)
+                if (terrain !== 'tunnel' && getGNBPositions().length > 0) {
+                    // choose nearest gnb
+                    const g = getGNBPositions().reduce((acc, g) => !acc ? g : (Math.abs(g.x - v.x) < Math.abs(acc.x - v.x) ? g : acc), null);
+                    if (g) {
+                        ctx.strokeStyle = '#fb923c'; ctx.lineWidth = 1;
+                        ctx.beginPath(); ctx.moveTo(v.x, v.y - 6); ctx.lineTo(g.x, g.y + 6); ctx.stroke();
+                    }
+                }
+            });
+
+            // draw platoon links (V2V green, leader->gNB orange if available)
+            ctx.lineWidth = 1.5;
+            for (let i = 0; i < trucks.length; i++) {
+                const t = trucks[i];
+                if (t.role === 'Leader') {
+                    if (terrain !== 'tunnel' && gpos.length > 0 && t.status === 'normal') {
+                        // nearest gnb
+                        const g = gpos.reduce((acc, g) => !acc ? g : (Math.abs(g.x - t.x) < Math.abs(acc.x - t.x) ? g : acc), null);
+                        if (g) {
+                            ctx.strokeStyle = '#fb923c';
+                            ctx.beginPath(); ctx.moveTo(t.x, t.y - 8); ctx.lineTo(g.x, g.y + 8); ctx.stroke();
+                        }
+                    }
+                } else {
+                    // connect to vehicle ahead (right)
+                    const ahead = trucks[i + 1];
+                    if (ahead && t.status === 'normal') {
+                        ctx.strokeStyle = '#34d399';
+                        ctx.beginPath(); ctx.moveTo(t.x + 14, t.y); ctx.lineTo(ahead.x - 14, ahead.y); ctx.stroke();
+                    }
+                }
+            }
+
+            // draw trucks on top
+            trucks.forEach(t => {
+                ctx.fillStyle = t.color;
+                ctx.fillRect(t.x - 18, t.y - 12, 36, 24); // body
+                ctx.fillStyle = '#fff'; ctx.font = '11px monospace'; ctx.fillText(t.id, t.x - 12, t.y - 16);
+                // small status / conn under truck
+                ctx.fillStyle = '#000'; ctx.font = '10px sans-serif'; ctx.fillText(t.conn === 'NONE' ? 'No gNB' : t.conn, t.x - 18, t.y + 28);
+            });
+        }
+
+        // -------------------- UI table refresh --------------------
+        function refreshTables() {
+            // platoon table (show leader first)
+            platoonTable.innerHTML = '';
+            const sorted = trucks.slice().sort((a, b) => b.x - a.x); // leader first
+            sorted.forEach(t => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td>${t.id}</td><td>${t.role}</td><td>${t.conn}</td><td>${t.status}</td>`;
+                platoonTable.appendChild(tr);
+            });
+
+            // traffic summary
+            trafficTable.innerHTML = '';
+            const cars = otherVehicles.filter(v => v.type === 'car').length;
+            const buses = otherVehicles.filter(v => v.type === 'bus').length;
+            const tr1 = document.createElement('tr'); tr1.innerHTML = `<td>Cars</td><td>${cars}</td><td>${terrain === 'tunnel' ? 'no gNB in tunnel' : ''}</td>`;
+            const tr2 = document.createElement('tr'); tr2.innerHTML = `<td>Buses</td><td>${buses}</td><td>always V2I if gNB</td>`;
+            trafficTable.appendChild(tr1); trafficTable.appendChild(tr2);
+        }
+
+        // -------------------- Animation loop --------------------
+        let last = performance.now();
+        function loop(ts) {
+            const now = ts || performance.now();
+            const dt = (now - last) / 1000;
+            last = now;
+
+            update(dt);
+            draw();
+            refreshTables();
+
+            requestAnimationFrame(loop);
+        }
+        requestAnimationFrame(loop);
+
+        // -------------------- Utilities & cleanup --------------------
+        function getGNBPositions() {
+            // cached wrapper for use in multiple spots
+            return (terrain === 'tunnel') ? [] : getGNBPositionsUncached();
+        }
+        function getGNBPositionsUncached() {
+            const spacing = terrain === 'city' ? 120 : 380;
+            const positions = [];
+            for (let worldX = -1000; worldX < 2000; worldX += spacing) {
+                const screenX = worldX - (offset % spacing) + 200;
+                positions.push({ x: screenX, y: LANES[1] - 80 });
+            }
+            return positions.filter(p => p.x > -120 && p.x < canvas.width + 120);
+        }
+
+        // Note: small wrapper to avoid name conflict
+        function getGNBPositions() { return (terrain === 'tunnel') ? [] : getGNBPositionsUncached(); }
+
+        // -------------------- Kickoff: adjust initial traffic */}
+        adjustOtherTraffic();
+        uiLog('Mô phỏng sẵn sàng — bấm nút để rời/nhập đoàn, hoặc quan sát tự động.');
+
+        // -------------------- End of script --------------------
+    </script>
+</body>
+
+</html>
